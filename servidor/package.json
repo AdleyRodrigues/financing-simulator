@@ -1,0 +1,21 @@
+{
+  "name": "controle-divida-server",
+  "version": "1.0.0",
+  "description": "JSON Server para persistência do Controle de Dívida",
+  "main": "db.json",
+  "scripts": {
+    "start": "json-server --watch db.json --port 3000 --verbose",
+    "dev": "json-server --watch db.json --port 3000 --delay 500 --verbose",
+    "start:custom-port": "json-server --watch db.json --port 3001 --verbose"
+  },
+  "keywords": [
+    "json-server",
+    "api",
+    "mock"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "json-server": "^0.17.4"
+  }
+}
