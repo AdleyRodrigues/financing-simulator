@@ -1,0 +1,8 @@
+{
+  "divida_inicial": 60000.00,
+  "taxa_juros": 0.01,
+  "comentarios": {
+    "divida_inicial": "Valor inicial da dívida em reais",
+    "taxa_juros": "Taxa de juros mensal (0.01 = 1% ao mês)"
+  }
+}

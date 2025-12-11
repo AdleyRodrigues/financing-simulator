@@ -46,8 +46,52 @@ except ImportError:
     PERSISTENCIA_DISPONIVEL = False
     print("⚠️  Módulo persistence.py não encontrado. Modo offline ativado.")
 
-DIVIDA_INICIAL = 50000.00
-TAXA_JUROS = 0.01  # 1% a.m.
+
+def carregar_configuracao():
+    """Carrega configurações do arquivo config.json."""
+    import os
+    import json
+    
+    config_path = os.path.join(os.path.dirname(__file__), "config.json")
+    
+    # Valores padrão
+    config_padrao = {
+        "divida_inicial": 50000.00,
+        "taxa_juros": 0.01
+    }
+    
+    try:
+        if os.path.exists(config_path):
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+                print(f"✅ Configuração carregada de {config_path}")
+                return {
+                    "divida_inicial": float(config.get("divida_inicial", config_padrao["divida_inicial"])),
+                    "taxa_juros": float(config.get("taxa_juros", config_padrao["taxa_juros"]))
+                }
+        else:
+            print(f"⚠️  Arquivo config.json não encontrado. Usando valores padrão.")
+            # Criar arquivo de configuração padrão
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump({
+                    "divida_inicial": config_padrao["divida_inicial"],
+                    "taxa_juros": config_padrao["taxa_juros"],
+                    "comentarios": {
+                        "divida_inicial": "Valor inicial da dívida em reais",
+                        "taxa_juros": "Taxa de juros mensal (0.01 = 1% ao mês)"
+                    }
+                }, f, indent=2, ensure_ascii=False)
+            print(f"✅ Arquivo config.json criado com valores padrão")
+            return config_padrao
+    except Exception as e:
+        print(f"⚠️  Erro ao carregar config.json: {e}. Usando valores padrão.")
+        return config_padrao
+
+
+# Carregar configuração
+CONFIG = carregar_configuracao()
+DIVIDA_INICIAL = CONFIG["divida_inicial"]
+TAXA_JUROS = CONFIG["taxa_juros"]
 
 
 def format_brl(valor: float) -> str:
@@ -72,7 +116,7 @@ class ControleDividaApp(tk.Tk):
 
         self.title("Controle de Dívida - Juros 1% a.m.")
         self.geometry("880x560")
-        self.resizable(False, False)
+        self.resizable(True, True)  # Permite maximizar a janela
 
         # Estado em memória
         self.divida_inicial = DIVIDA_INICIAL
@@ -113,11 +157,12 @@ class ControleDividaApp(tk.Tk):
         header = ttk.Frame(self, padding=(12, 12, 12, 8))
         header.pack(fill="x")
 
-        ttk.Label(header, text="Controle de Dívida com Juros (1% a.m.)", font=("Segoe UI", 14, "bold")).pack(anchor="w")
+        taxa_percentual = self.taxa * 100
+        ttk.Label(header, text=f"Controle de Dívida com Juros ({taxa_percentual:.1f}% a.m.)", font=("Segoe UI", 14, "bold")).pack(anchor="w")
         
         # Indicador de modo (online/offline)
         modo_texto = "🟢 Online" if self.modo_online else "🔴 Offline"
-        sub_texto = f"Dívida inicial: {format_brl(self.divida_inicial)}   •   Juros: 1% ao mês   •   {modo_texto}"
+        sub_texto = f"Dívida inicial: {format_brl(self.divida_inicial)}   •   Juros: {taxa_percentual:.1f}% ao mês   •   {modo_texto}"
         
         sub = ttk.Label(
             header,
@@ -198,6 +243,24 @@ class ControleDividaApp(tk.Tk):
 
         ttk.Label(bloco, text="Histórico de Pagamentos", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 6))
 
+        # Configurar estilo da tabela com linhas visíveis
+        style = ttk.Style()
+        style.configure("Treeview", 
+                       rowheight=25,
+                       borderwidth=1,
+                       relief="solid")
+        style.configure("Treeview.Heading",
+                       font=("Segoe UI", 9, "bold"),
+                       background="#E0E0E0",
+                       borderwidth=1,
+                       relief="raised")
+        style.map("Treeview.Heading",
+                 background=[("active", "#D0D0D0")])
+        
+        # Cores alternadas para as linhas
+        self.tabela_tag_config = True
+        style.configure("Treeview", background="#FFFFFF", fieldbackground="#FFFFFF")
+
         cols = ("mes", "data", "valor", "juros", "amort", "saldo", "status")
         self.tabela = ttk.Treeview(bloco, columns=cols, show="headings", height=16)
         self.tabela.heading("mes", text="Mês")
@@ -210,11 +273,15 @@ class ControleDividaApp(tk.Tk):
 
         self.tabela.column("mes", width=50, anchor="center")
         self.tabela.column("data", width=90, anchor="center")
-        self.tabela.column("valor", width=110, anchor="e")
-        self.tabela.column("juros", width=110, anchor="e")
-        self.tabela.column("amort", width=120, anchor="e")
-        self.tabela.column("saldo", width=130, anchor="e")
+        self.tabela.column("valor", width=110, anchor="center")
+        self.tabela.column("juros", width=110, anchor="center")
+        self.tabela.column("amort", width=120, anchor="center")
+        self.tabela.column("saldo", width=130, anchor="center")
         self.tabela.column("status", width=80, anchor="center")
+        
+        # Configurar tags para linhas alternadas
+        self.tabela.tag_configure("oddrow", background="#F5F5F5")
+        self.tabela.tag_configure("evenrow", background="#FFFFFF")
 
         self.tabela.pack(fill="both", expand=True)
 
@@ -547,6 +614,10 @@ class ControleDividaApp(tk.Tk):
             messagebox.showinfo("Parabéns", "Dívida quitada! 🎉")
 
     def _adiciona_na_tabela(self, reg: dict):
+        # Determinar tag para cor alternada
+        row_count = len(self.tabela.get_children())
+        tag = "evenrow" if row_count % 2 == 0 else "oddrow"
+        
         self.tabela.insert(
             "",
             "end",
@@ -559,6 +630,7 @@ class ControleDividaApp(tk.Tk):
                 format_brl(reg["saldo"]),
                 reg["status"],
             ),
+            tags=(tag,)
         )
 
     def _atualiza_resumos(self):
@@ -665,6 +737,20 @@ class ControleDividaApp(tk.Tk):
             )
             return
         
+        # Verificar se servidor ainda está acessível
+        if not persistence.verificar_conexao():
+            self.modo_online = False
+            messagebox.showerror(
+                "Servidor Indisponível",
+                "O servidor JSON Server não está mais acessível.\n\n"
+                "Por favor, inicie o servidor:\n"
+                "1. Abra um terminal\n"
+                "2. cd servidor\n"
+                "3. pnpm start\n\n"
+                "Depois, reinicie a aplicação."
+            )
+            return
+        
         if not messagebox.askyesno(
             "Confirmar Limpeza",
             "Isso irá deletar TODOS os registros do JSON Server.\n\nDeseja continuar?"
@@ -707,10 +793,30 @@ class ControleDividaApp(tk.Tk):
             print(f"❌ Erro ao limpar histórico: {e}")
             import traceback
             traceback.print_exc()
-            messagebox.showerror(
-                "Erro",
-                f"Erro ao limpar histórico do servidor:\n{e}"
-            )
+            
+            # Verificar se é erro de conexão
+            erro_msg = str(e)
+            if "não está disponível" in erro_msg or "Servidor" in erro_msg or "fechou a conexão" in erro_msg:
+                self.modo_online = False
+                messagebox.showerror(
+                    "Erro de Conexão",
+                    f"{erro_msg}\n\n"
+                    "A aplicação foi alterada para modo offline.\n"
+                    "Se alguns registros foram deletados, reinicie a aplicação."
+                )
+            elif "Alguns registros falharam" in erro_msg:
+                # Sucesso parcial - alguns foram deletados
+                messagebox.showwarning(
+                    "Limpeza Parcial",
+                    f"{erro_msg}\n\n"
+                    "Alguns registros foram deletados com sucesso.\n"
+                    "Reinicie a aplicação para sincronizar o estado."
+                )
+            else:
+                messagebox.showerror(
+                    "Erro",
+                    f"Erro ao limpar histórico do servidor:\n\n{erro_msg}"
+                )
 
     def _recalcular_agregado_e_table(self):
         """Recalcula total_pago e saldo_restante percorrendo registros; re-renderiza tabela."""

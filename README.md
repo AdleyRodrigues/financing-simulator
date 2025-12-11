@@ -1,8 +1,24 @@
 # Controle de Dívida
 
-Aplicação desktop para controlar pagamento de dívida pessoal com juros de 1% ao mês.
+Aplicação desktop para controlar pagamento de dívida pessoal com juros configuráveis.
 
 **Stack:** Python 3 + Tkinter + JSON Server (Node.js)
+
+## ⚙️ Configuração
+
+Edite o arquivo `config.json` para ajustar os valores:
+
+```json
+{
+  "divida_inicial": 50000.00,
+  "taxa_juros": 0.01
+}
+```
+
+- `divida_inicial`: Valor inicial da dívida em reais
+- `taxa_juros`: Taxa de juros mensal (0.01 = 1% ao mês, 0.02 = 2% ao mês, etc.)
+
+O arquivo é criado automaticamente na primeira execução se não existir.
 
 ## 🚀 Uso
 
@@ -31,6 +47,7 @@ Indicador no header:
 ```
 ControleDivida/
 ├── controle_divida.py    # Aplicação principal
+├── config.json           # Configurações (dívida inicial, taxa)
 ├── persistence.py         # Camada de persistência
 ├── test_persistence.py    # Testes
 ├── servidor/              # Backend

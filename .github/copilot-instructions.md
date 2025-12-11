@@ -1,109 +1,150 @@
 # Copilot Instructions - Controle de Dívida
 
+## 🇧🇷 Idioma
+**IMPORTANTE**: Sempre responda em português brasileiro. Toda comunicação, explicações, comentários e documentação devem ser em português.
+
 ## Visão Geral do Projeto
-Este é um aplicativo de controle de dívida em Tkinter com uma dívida inicial fixa de R$ 50.000,00 e taxa de juros de 1% ao mês. O usuário registra pagamentos mensais e o sistema calcula automaticamente juros, amortização e saldo restante.
+Este é um aplicativo desktop para controle de dívida pessoal desenvolvido em Python + Tkinter com persistência opcional via JSON Server. A aplicação simula um financiamento de R$ 50.000,00 com juros de 1% ao mês, permitindo ao usuário registrar pagamentos mensais e acompanhar a evolução da dívida.
 
-## Arquitetura e Componentes Principais
+## Arquitetura e Componentes
 
-### Estrutura do Projeto
-- **Arquivo principal**: `controle_divida.py` - lógica da aplicação e interface Tkinter
-- **Módulo de persistência**: `persistence.py` - camada de comunicação com JSON Server (urllib)
-- **Diretório servidor**: `servidor/` - backend JSON Server com package.json próprio
-  - `db.json` - arquivo JSON Server com registros e configuração
-  - `start_server.bat` / `start_server.sh` - scripts para iniciar o servidor
-- **Classe principal**: `ControleDividaApp` - herda de `tk.Tk` e gerencia toda a interface
-- **Estado em memória**: Dados armazenados em `self.registros` (lista de dicts) com sincronização opcional
+### Estrutura Principal
+```
+financing-simulator/
+├── controle_divida.py     # App principal (Tkinter)
+├── config.json            # Configurações (dívida inicial, taxa)
+├── persistence.py         # Camada de persistência (urllib)
+├── test_persistence.py    # Testes da camada HTTP
+├── servidor/              # Backend JSON Server
+│   ├── db.json           # Dados + configuração
+│   ├── package.json      # Dependências Node.js
+│   ├── start_server.bat  # Script Windows
+│   └── start_server.sh   # Script Unix/Linux
+```
 
-### Lógica Financeira Central
+### Classe Central: `ControleDividaApp`
+- Herda de `tk.Tk` e gerencia toda a interface
+- Estado em memória: `self.registros` (lista de dicts)
+- Agregados calculados: `self.total_pago` e `self.saldo_restante`
+- Modo híbrido: online (com servidor) ou offline (apenas memória)
+
+### Lógica Financeira Configurável
 ```python
-# Fórmula aplicada a cada pagamento:
-juros = saldo_anterior * 0.01
+# Aplicada a cada pagamento:
+juros = saldo_anterior * self.taxa  # Taxa definida em config.json
 amortizacao = valor_pago - juros
 novo_saldo = saldo_anterior - amortizacao
 ```
 
-**Comportamento especial**: Se o pagamento exceder o saldo devedor + juros, o sistema ajusta automaticamente para quitar a dívida.
+**Configuração**: Valores carregados de `config.json`:
+- `divida_inicial`: Valor inicial da dívida (padrão: R$ 50.000,00)
+- `taxa_juros`: Taxa mensal em decimal (padrão: 0.01 = 1%)
 
-## Padrões e Convenções Específicas
+**Auto-ajuste**: Se pagamento > saldo + juros, ajusta para quitar automaticamente.
 
-### Formatação Monetária
-Use a função `format_brl()` que implementa formatação brasileira sem dependências:
-- Converte `12345.67` para `"R$ 12.345,67"`
-- Não depende de locale do sistema
+## Padrões de Código Específicos
 
-### Parsing de Entrada do Usuário
-- **Valores**: `_parse_valor()` aceita formatos com "R$", vírgulas e pontos
-- **Datas**: `_parse_data()` aceita "dd/mm/aaaa" ou "dd/mm/aa" (assume século 21)
+### Formatação Brasileira sem Dependências
+- `format_brl(12345.67)` → `"R$ 12.345,67"`
+- Implementação manual (não usa locale)
 
-### Gestão de Estado
-- Estado mantido em `self.registros` (lista de dicionários)
-- Cada registro local contém campo opcional `server_id` para rastreamento
-- Campos agregados: `self.total_pago` e `self.saldo_restante`
-- **Importante**: Use `_recalcular_agregado_e_table()` após remoções para evitar erros de arredondamento
+### Parsing Flexível de Entrada
+- **Valores**: `_parse_valor()` aceita "2500", "2500,50", "R$ 2.500,50"
+- **Datas**: `_parse_data()` aceita "dd/mm/yyyy" e "dd/mm/yy" (assume 20xx)
+- **Máscaras**: Aplicação automática em tempo real via callbacks
 
-### Persistência (Modo Online/Offline)
-- **Módulo**: `persistence.py` usa apenas urllib (sem dependências externas)
-- **Endpoints**: JSON Server em `http://localhost:3000` com timeout de 3s
-- **Detecção automática**: Aplicação verifica servidor ao iniciar com `_verificar_servidor()`
-- **Operações**: CRUD completo - `create_registro()`, `read_all_registros()`, `update_registro()`, `delete_registro()`
-- **Sincronização**: Cada operação (registrar, alterar status, desfazer, reiniciar) tenta salvar no servidor
-- **Fallback gracioso**: Se servidor indisponível, exibe aviso e continua em modo offline
-- **Indicador visual**: Header mostra "🟢 Online" ou "🔴 Offline"
+### Estado Sincronizado
+- Cada registro local pode ter `server_id` para rastreamento
+- **CRÍTICO**: Use `_recalcular_agregado_e_table()` após remoções (evita erros de float)
+- Recalcula toda a sequência financeira do zero
 
-## Interface do Usuário
+## Persistência Condicional
 
-### Componentes Tkinter
-- **Formulário**: Entrada de valor, data (sugerida automaticamente) e status
-- **Tabela**: Treeview com 7 colunas (Mês, Data, Valor Pago, Juros, Amortização, Saldo, Status)
-- **Resumos**: Total pago e saldo restante em tempo real
+### Detecção Automática de Servidor
+- `_verificar_servidor()` testa conexão ao iniciar
+- Indicador visual: "🟢 Online" ou "🔴 Offline" no header
+- Fallback gracioso: continua funcionando sem servidor
 
-### Fluxo de Interação
-1. Sistema sugere próxima data (mês seguinte da última entrada)
-2. Usuário informa valor e confirma/edita data
-3. Cálculos automáticos atualizam tabela e resumos
-4. Foco retorna ao campo de valor para próxima entrada
+### Operações HTTP (persistence.py)
+- **Base**: `http://localhost:3000` (JSON Server)
+- **Timeout**: 3 segundos para todas as operações
+- **Logging**: Prefixo `[PERSISTENCE]` em todas as operações
+- **Endpoints**: `/registros` (CRUD) e `/config` (configuração)
 
-## Funcionalidades Especiais
+### Sincronização de Dados
+- Cada operação (criar, alterar, deletar) tenta salvar no servidor
+- Se falhar, exibe warning mas continua funcionando
+- Carregamento inicial: `_carregar_registros_iniciais()` sincroniza estado
 
-### Status de Pagamento
-- Status "Pago"/"Pendente" é informativo - não altera cálculos financeiros
-- Pode ser alterado via botão "Alternar Status" com seleção na tabela
+## Fluxo de Interação Típico
 
-### Operações de Desfazer
-- **Desfazer último**: Remove último registro e recalcula tudo
-- **Reiniciar**: Limpa todos os dados após confirmação
+### Entrada de Dados
+1. Sistema sugere próxima data (mês seguinte do último registro)
+2. Campo de valor recebe foco automático
+3. Calendário tkcalendar ou entrada manual de data
+4. Status "Pago"/"Pendente" (informativo, não afeta cálculos)
 
-## Desenvolvimento e Debugging
+### Comportamentos Especiais
+- **Auto-quitação**: Pagamentos excessivos são ajustados
+- **Data sugerida**: Atualizada automaticamente para próximo mês
+- **Recálculo completo**: Operações de desfazer recalculam tudo
 
-### Executar o Aplicativo
+## Comandos de Desenvolvimento
 
-**Modo Offline** (sem persistência):
+### Execução Modo Offline
 ```bash
 python controle_divida.py
 ```
 
-**Modo Online** (com persistência):
-```bash
-# Terminal 1: Iniciar JSON Server
+### Execução Modo Online
+```powershell
+# Terminal 1: Servidor
 cd servidor
-pnpm install  # ou: npm install (apenas primeira vez)
-pnpm start    # ou: ./start_server.bat (Windows) / ./start_server.sh (Linux/Mac)
+pnpm install  # primeira vez
+pnpm start
 
-# Terminal 2: Executar aplicação (voltar para raiz)
-cd ..
+# Terminal 2: Aplicação
 python controle_divida.py
 ```
 
-### Pontos de Atenção
-- **Persistência condicional**: Dados salvos apenas se JSON Server estiver disponível
-- **Arredondamento**: 2 casas decimais em todos os cálculos financeiros
-- **Tratamento de erro**: Valores/datas inválidas geram messageboxes
-- **Timeout de rede**: 3 segundos para operações HTTP
-- **Sincronização**: Cada registro local guarda `server_id` para rastreamento
-- **Ajuste de tema**: Tkinter tenta vista → clam → padrão
+### Scripts de Servidor
+- Windows: `servidor/start_server.bat`
+- Unix/Linux: `servidor/start_server.sh`
+- **Auto-detecção**: pnpm → yarn → npm
+- **Portas**: 3000 (padrão), scripts suportam customização
 
-### Testagem Manual
-- Testar pagamentos que excedem saldo devedor
-- Verificar cálculos com valores decimais
-- Validar formatação de datas e valores brasileiros
-- Confirmar recálculos após operações de desfazer
+### Testagem
+```bash
+python test_persistence.py  # Testa operações HTTP
+```
+
+## Dependências e Instalação
+
+### Python
+- **Obrigatório**: Tkinter (geralmente incluso)
+- **Opcional**: tkcalendar (auto-instalação tentada)
+- **Fallback**: Campo de data manual se tkcalendar falhar
+
+### Node.js (apenas modo online)
+- JSON Server 0.17.4
+- Gerenciadores suportados: pnpm, yarn, npm
+- Scripts de início detectam automaticamente
+
+### Configuração Inicial
+- `config.json` é criado automaticamente na primeira execução
+- Edite `config.json` para alterar dívida inicial ou taxa de juros
+- Mudanças exigem reinicialização da aplicação
+
+## Pontos Críticos para Debugging
+
+### Erros Comuns
+- **Arredondamento**: Sempre 2 casas decimais nos cálculos
+- **Timeout HTTP**: 3s limite pode causar falsos offline
+- **Recálculo**: Use `_recalcular_agregado_e_table()` após mudanças na lista
+- **server_id**: Campo opcional que conecta registro local ao servidor
+
+### Validações
+- Valores devem ser > 0
+- Datas em formato brasileiro válido
+- Conexão servidor testada a cada operação
+- Auto-ajuste de pagamentos excessivos

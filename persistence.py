@@ -8,12 +8,16 @@ Usa apenas bibliotecas padrão do Python (urllib).
 import json
 import urllib.request
 import urllib.error
+import http.client
+import time
 from typing import List, Dict, Optional, Any
 
 # Configuração
 BASE_URL = "http://localhost:3000"
 TIMEOUT = 3  # segundos
 PERSISTENCIA_ATIVA = True
+MAX_RETRIES = 3  # número máximo de tentativas
+RETRY_DELAY = 0.5  # segundos entre tentativas
 
 
 class PersistenceError(Exception):
@@ -79,11 +83,18 @@ def _fazer_requisicao(
         print(f"[PERSISTENCE] ❌ Erro HTTP {e.code}: {e.reason}")
         raise PersistenceError(f"Erro HTTP {e.code}: {e.reason}")
     except urllib.error.URLError as e:
-        print(f"[PERSISTENCE] ❌ Erro de conexão: {e.reason}")
-        raise PersistenceError(f"Erro de conexão: {e.reason}")
+        erro_msg = str(e.reason)
+        print(f"[PERSISTENCE] ❌ Erro de conexão: {erro_msg}")
+        # Mensagem mais amigável para erro de conexão
+        if "Connection refused" in erro_msg or "closed connection" in erro_msg.lower():
+            raise PersistenceError("Servidor não está disponível. Inicie o JSON Server com 'pnpm start' na pasta servidor/")
+        raise PersistenceError(f"Erro de conexão: {erro_msg}")
     except json.JSONDecodeError as e:
         print(f"[PERSISTENCE] ❌ Erro ao decodificar JSON: {e}")
         raise PersistenceError(f"Erro ao decodificar JSON: {e}")
+    except http.client.RemoteDisconnected as e:
+        print(f"[PERSISTENCE] ❌ Conexão fechada pelo servidor: {e}")
+        raise PersistenceError(f"Servidor fechou a conexão. Tente novamente.")
     except Exception as e:
         print(f"[PERSISTENCE] ❌ Erro inesperado: {e}")
         raise PersistenceError(f"Erro inesperado: {e}")
@@ -150,24 +161,34 @@ def update_registro(registro_id: int, patch: Dict[str, Any]) -> Dict[str, Any]:
 
 def delete_registro(registro_id: int) -> None:
     """
-    Remove um registro do servidor.
+    Remove um registro do servidor com retry automático.
     
     Args:
         registro_id: ID do registro a ser removido
     
     Raises:
-        PersistenceError: Se houver erro na requisição
+        PersistenceError: Se houver erro na requisição após todas as tentativas
     """
     print(f"[PERSISTENCE] 🗑️  Deletando registro ID {registro_id}...")
     url = f"{BASE_URL}/registros/{registro_id}"
-    _fazer_requisicao(url, metodo="DELETE")
-    print(f"[PERSISTENCE] 🗑️  Registro {registro_id} deletado")
+    
+    for tentativa in range(MAX_RETRIES):
+        try:
+            _fazer_requisicao(url, metodo="DELETE")
+            print(f"[PERSISTENCE] 🗑️  Registro {registro_id} deletado")
+            return
+        except PersistenceError as e:
+            if "fechou a conexão" in str(e) and tentativa < MAX_RETRIES - 1:
+                print(f"[PERSISTENCE] ⚠️  Tentativa {tentativa + 1} falhou, aguardando...")
+                time.sleep(RETRY_DELAY * (tentativa + 1))  # Delay progressivo
+                continue
+            raise
 
 
 def delete_todos_registros() -> None:
     """
     Remove todos os registros do servidor.
-    Faz múltiplas requisições DELETE, uma para cada registro.
+    Faz múltiplas requisições DELETE com delay entre elas para evitar sobrecarga.
     
     Raises:
         PersistenceError: Se houver erro na requisição
@@ -177,12 +198,29 @@ def delete_todos_registros() -> None:
     total = len(registros)
     print(f"[PERSISTENCE] 🗑️  Total a deletar: {total}")
     
+    erros = []
     for i, reg in enumerate(registros, 1):
         if "id" in reg:
             print(f"[PERSISTENCE] 🗑️  Deletando {i}/{total}...")
-            delete_registro(reg["id"])
+            try:
+                delete_registro(reg["id"])
+                # Pequeno delay entre requisições para não sobrecarregar o servidor
+                if i < total:
+                    time.sleep(0.1)
+            except PersistenceError as e:
+                print(f"[PERSISTENCE] ⚠️  Falha ao deletar ID {reg['id']}: {e}")
+                erros.append((reg["id"], str(e)))
+                continue
     
-    print(f"[PERSISTENCE] 🗑️  Todos os {total} registros foram deletados")
+    if erros:
+        print(f"[PERSISTENCE] ⚠️  Alguns registros falharam: {len(erros)} erro(s)")
+        # Não lançar exceção se pelo menos alguns foram deletados
+        if len(erros) < total:
+            print(f"[PERSISTENCE] ✅ {total - len(erros)}/{total} registros deletados")
+        else:
+            raise PersistenceError(f"Falha ao deletar todos os registros. Primeira falha: {erros[0][1]}")
+    else:
+        print(f"[PERSISTENCE] 🗑️  Todos os {total} registros foram deletados")
 
 
 def read_config() -> Dict[str, Any]:
