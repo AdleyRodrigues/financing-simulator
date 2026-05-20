@@ -9,8 +9,8 @@ Mini app Tkinter: Controle de Dívida com Juros (1% a.m.)
     juros = saldo_anterior * 0.01
     amortização = valor_pago - juros
     novo_saldo = saldo_anterior - amortização
-- Histórico em tabela: Mês, Data, Valor Pago, Juros, Amortização, Dívida Restante, Status
-- Status: "Pago" (padrão) ou "Pendente" (informativo; não altera a lógica de cálculo)
+- Histórico em tabela: Mês, Pago em, Ref. combinada, Valor Pago, Juros, Amortização, Dívida Restante, Status
+- Status possíveis: Pago, Pendente, Sem pagamento, Em aberto, Fora do mês
 - Armazenamento apenas em memória
 - Sem dependências além de Tkinter
 """
@@ -19,6 +19,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import date, datetime
 from calendar import monthrange
+from typing import List, Optional
 
 # Importar calendário
 try:
@@ -110,12 +111,49 @@ def next_month(d: date) -> date:
     return date(year, month, min(day, last_day))
 
 
+def parse_date_br(texto: str) -> Optional[date]:
+    """Converte dd/mm/aaaa (ou dd/mm/aa) para date."""
+    texto = (texto or "").strip()
+    if not texto:
+        return None
+    try:
+        d, m, a = texto.split("/")
+        d, m, a = int(d), int(m), int(a)
+        if a < 100:
+            a = 2000 + a
+        return date(a, m, d)
+    except Exception:
+        return None
+
+
+def format_date_br(data: date) -> str:
+    return data.strftime("%d/%m/%Y")
+
+
+def parse_created_at_to_date(created_at: str) -> Optional[date]:
+    """Converte createdAt ISO em date local (ignora timezone para exibição)."""
+    if not created_at:
+        return None
+    try:
+        return datetime.fromisoformat(created_at.replace("Z", "+00:00")).date()
+    except Exception:
+        return None
+
+
+def same_month_year(a: date, b: date) -> bool:
+    return a.year == b.year and a.month == b.month
+
+
 class ControleDividaApp(tk.Tk):
+    # Equivalente ao componente principal <App /> em React.
+    # A classe herda de tk.Tk, que representa a janela raiz/principal da aplicação desktop.
     def __init__(self):
+        # O __init__ funciona como o 'constructor' de uma classe em JS, 
+        # ou como o estado inicial antes de um useEffect em React.
         super().__init__()
 
         self.title("Controle de Dívida - Juros 1% a.m.")
-        self.geometry("880x560")
+        self.geometry("1160x620")
         self.resizable(True, True)  # Permite maximizar a janela
 
         # Estado em memória
@@ -129,13 +167,20 @@ class ControleDividaApp(tk.Tk):
         self.modo_online = False
         self._verificar_servidor()
 
-        # Próxima data sugerida (começa hoje; a cada registro, sugere mês seguinte)
-        self.data_sugerida = date.today()
+        # Datas sugeridas para novos lançamentos
+        self.dia_referencia_padrao = 10
+        self.data_referencia_sugerida = self._data_referencia_inicial()
+        self.referencia_em_aberto = self.data_referencia_sugerida
 
-        # Variáveis de UI
+        # Variáveis de UI (Estado Reativo)
+        # tk.StringVar() é extremamente similar ao useState("") no React. 
+        # Toda vez que você altera essa variável com .set(), os inputs e textos na tela
+        # que dependem dela são re-renderizados/atualizados automaticamente!
         self.var_valor = tk.StringVar(value="")
-        self.var_data = tk.StringVar(value=self.data_sugerida.strftime("%d/%m/%Y"))
+        self.var_data_referencia = tk.StringVar(value=format_date_br(self.data_referencia_sugerida))
         self.var_status = tk.StringVar(value="Pago")
+        self.var_alerta_referencia = tk.StringVar(value="")
+        self.item_to_reg_index = {}
 
         print("🎨 Resumos iniciais:")
         print(f"   Total pago: {format_brl(self.total_pago)}")
@@ -152,7 +197,102 @@ class ControleDividaApp(tk.Tk):
 
         self.entry_valor.focus_set()
 
+    def _data_referencia_inicial(self) -> date:
+        hoje = date.today()
+        ultimo_dia = monthrange(hoje.year, hoje.month)[1]
+        return date(hoje.year, hoje.month, min(self.dia_referencia_padrao, ultimo_dia))
+
+    def _parse_data(self, texto: str, default_data: date) -> date:
+        texto = (texto or "").strip()
+        if not texto:
+            return default_data
+        data = parse_date_br(texto)
+        if not data:
+            raise ValueError("Data inválida. Use dd/mm/aaaa.")
+        return data
+
+    def _data_referencia_registro(self, reg: dict) -> date:
+        referencia = parse_date_br(reg.get("data_referencia", "")) or parse_date_br(reg.get("data", ""))
+        return referencia or self._data_referencia_inicial()
+
+    def _data_pagamento_registro(self, reg: dict) -> Optional[date]:
+        return parse_date_br(reg.get("data_pagamento", ""))
+
+    def _normalizar_registro_servidor(self, reg_servidor: dict) -> dict:
+        data_ref = (
+            parse_date_br(reg_servidor.get("data_referencia", ""))
+            or parse_date_br(reg_servidor.get("data", ""))
+            or self._data_referencia_inicial()
+        )
+        data_pag = (
+            parse_date_br(reg_servidor.get("data_pagamento", ""))
+            or parse_created_at_to_date(reg_servidor.get("createdAt", ""))
+            or data_ref
+        )
+        tipo = reg_servidor.get("tipo") or ("sem_pagamento" if float(reg_servidor.get("valor", 0.0)) == 0 else "pagamento")
+        status_default = "Sem pagamento" if tipo == "sem_pagamento" else "Pago"
+        return {
+            "mes": reg_servidor.get("mes", len(self.registros) + 1),
+            "data_pagamento": format_date_br(data_pag),
+            "data_referencia": format_date_br(data_ref),
+            "data": format_date_br(data_ref),  # legado
+            "valor": float(reg_servidor.get("valor", 0.0)),
+            "juros": float(reg_servidor.get("juros", 0.0)),
+            "amort": float(reg_servidor.get("amort", 0.0)),
+            "saldo": float(reg_servidor.get("saldo", 0.0)),
+            "status": reg_servidor.get("status", status_default),
+            "tipo": tipo,
+            "server_id": reg_servidor.get("id"),
+        }
+
+    def _atualizar_campos_data_ui(self):
+        if CALENDARIO_DISPONIVEL:
+            self.date_picker_referencia.set_date(self.data_referencia_sugerida)
+        else:
+            self.var_data_referencia.set(format_date_br(self.data_referencia_sugerida))
+
+    def _atualizar_sugestoes_datas(self):
+        if not self.registros:
+            self.data_referencia_sugerida = self._data_referencia_inicial()
+            self.referencia_em_aberto = self.data_referencia_sugerida
+            self._atualizar_campos_data_ui()
+            return
+
+        ultima_ref = max(self._data_referencia_registro(reg) for reg in self.registros)
+        self.data_referencia_sugerida = next_month(ultima_ref)
+        self.referencia_em_aberto = self.data_referencia_sugerida
+        self._atualizar_campos_data_ui()
+
+    def _listar_lacunas_referencia(self) -> List[date]:
+        if not self.registros:
+            return []
+        refs = sorted(self._data_referencia_registro(reg) for reg in self.registros)
+        lacunas = []
+        atual = refs[0]
+        for ref in refs[1:]:
+            cursor = next_month(atual)
+            while cursor < ref:
+                lacunas.append(cursor)
+                cursor = next_month(cursor)
+            atual = ref
+        return lacunas
+
+    def _status_exibicao(self, reg: dict) -> str:
+        tipo = reg.get("tipo", "pagamento")
+        if tipo == "sem_pagamento":
+            return "Sem pagamento"
+        status = reg.get("status", "Pago")
+        data_pag = self._data_pagamento_registro(reg)
+        data_ref = self._data_referencia_registro(reg)
+        if status == "Pago" and data_pag and not same_month_year(data_pag, data_ref):
+            return "Fora do mês"
+        return status
+
     # ---------- Construção de UI ----------
+    # Os métodos _build_* equivalem a quebrar a UI em componentes menores e ao 'return <jsx>' do React.
+    # Como não há HTML/CSS aqui, usamos métodos de posicionamento do Tkinter:
+    # .pack() -> Funciona muito parecido com CSS Flexbox (empilha elementos no eixo X ou Y)
+    # .grid() -> Funciona igual ao CSS Grid (posiciona em linhas e colunas)
     def _build_header(self):
         header = ttk.Frame(self, padding=(12, 12, 12, 8))
         header.pack(fill="x")
@@ -170,6 +310,13 @@ class ControleDividaApp(tk.Tk):
             font=("Segoe UI", 10),
         )
         sub.pack(anchor="w", pady=(2, 0))
+        self.label_alerta_referencia = ttk.Label(
+            header,
+            textvariable=self.var_alerta_referencia,
+            font=("Segoe UI", 9),
+            foreground="#8D1A1A",
+        )
+        self.label_alerta_referencia.pack(anchor="w", pady=(4, 0))
 
     def _build_form(self):
         form = ttk.Frame(self, padding=(12, 6, 12, 6))
@@ -181,39 +328,54 @@ class ControleDividaApp(tk.Tk):
         self.entry_valor = ttk.Entry(form, width=16, textvariable=self.var_valor)
         self.entry_valor.grid(row=1, column=0, sticky="w", pady=(2, 0))
 
-        # Data com calendário
-        ttk.Label(form, text="Data:").grid(row=0, column=1, sticky="w", padx=(12, 0))
-        
+        # Somente data de referência combinada (data de pagamento = hoje automaticamente)
+        ttk.Label(form, text="Ref. combinada:").grid(row=0, column=1, sticky="w", padx=(12, 0))
+
         if CALENDARIO_DISPONIVEL:
-            # Widget de calendário
-            self.date_picker = DateEntry(
+            self.date_picker_referencia = DateEntry(
                 form,
                 width=12,
-                background='darkblue',
-                foreground='white',
+                background="darkblue",
+                foreground="white",
                 borderwidth=2,
-                date_pattern='dd/mm/yyyy',
-                locale='pt_BR',
-                firstweekday='sunday'
+                date_pattern="dd/mm/yyyy",
+                locale="pt_BR",
+                firstweekday="sunday",
             )
-            self.date_picker.grid(row=1, column=1, sticky="w", padx=(12, 0), pady=(2, 0))
-            # Definir data sugerida
-            self.date_picker.set_date(self.data_sugerida)
+            self.date_picker_referencia.grid(row=1, column=1, sticky="w", padx=(12, 0), pady=(2, 0))
+            self.date_picker_referencia.set_date(self.data_referencia_sugerida)
         else:
-            # Fallback: entrada manual
-            self.entry_data = ttk.Entry(form, width=14, textvariable=self.var_data)
-            self.entry_data.grid(row=1, column=1, sticky="w", padx=(12, 0), pady=(2, 0))
-            self.entry_data.bind('<KeyRelease>', self._aplicar_mascara_data)
+            self.entry_data_referencia = ttk.Entry(form, width=14, textvariable=self.var_data_referencia)
+            self.entry_data_referencia.grid(row=1, column=1, sticky="w", padx=(12, 0), pady=(2, 0))
+            self.entry_data_referencia.bind(
+                "<KeyRelease>",
+                lambda event: self._aplicar_mascara_data(event, self.var_data_referencia, self.entry_data_referencia),
+            )
+
+        ttk.Label(
+            form,
+            text="Data combinada da parcela (ex.: dia 10). O pagamento é registrado com a data de hoje.",
+            font=("Segoe UI", 8),
+            foreground="gray",
+        ).grid(row=2, column=1, sticky="w", padx=(12, 0))
 
         # Status
         ttk.Label(form, text="Status:").grid(row=0, column=2, sticky="w", padx=(12, 0))
-        self.combo_status = ttk.Combobox(form, width=12, state="readonly", values=["Pago", "Pendente"], textvariable=self.var_status)
+        self.combo_status = ttk.Combobox(
+            form,
+            width=12,
+            state="readonly",
+            values=["Pago", "Pendente"],
+            textvariable=self.var_status,
+        )
         self.combo_status.grid(row=1, column=2, sticky="w", padx=(12, 0))
         self.combo_status.current(0)
 
         # Botão registrar
         self.btn_registrar = ttk.Button(form, text="Registrar Pagamento", command=self.registrar_pagamento)
         self.btn_registrar.grid(row=1, column=3, padx=(12, 0))
+        self.btn_sem_pagamento = ttk.Button(form, text="Registrar mês sem pagamento", command=self.registrar_mes_sem_pagamento)
+        self.btn_sem_pagamento.grid(row=1, column=4, padx=(8, 0))
 
         # Info: Total Pago + ações
         info = ttk.Frame(self, padding=(12, 8, 12, 0))
@@ -261,27 +423,32 @@ class ControleDividaApp(tk.Tk):
         self.tabela_tag_config = True
         style.configure("Treeview", background="#FFFFFF", fieldbackground="#FFFFFF")
 
-        cols = ("mes", "data", "valor", "juros", "amort", "saldo", "status")
+        cols = ("mes", "data_pagamento", "data_referencia", "valor", "juros", "amort", "saldo", "status")
         self.tabela = ttk.Treeview(bloco, columns=cols, show="headings", height=16)
         self.tabela.heading("mes", text="Mês")
-        self.tabela.heading("data", text="Data")
+        self.tabela.heading("data_pagamento", text="Pago em")
+        self.tabela.heading("data_referencia", text="Ref. combinada")
         self.tabela.heading("valor", text="Valor Pago")
         self.tabela.heading("juros", text="Juros")
         self.tabela.heading("amort", text="Amortização")
         self.tabela.heading("saldo", text="Dívida Restante")
         self.tabela.heading("status", text="Status")
 
-        self.tabela.column("mes", width=50, anchor="center")
-        self.tabela.column("data", width=90, anchor="center")
+        self.tabela.column("mes", width=55, anchor="center")
+        self.tabela.column("data_pagamento", width=95, anchor="center")
+        self.tabela.column("data_referencia", width=105, anchor="center")
         self.tabela.column("valor", width=110, anchor="center")
         self.tabela.column("juros", width=110, anchor="center")
         self.tabela.column("amort", width=120, anchor="center")
         self.tabela.column("saldo", width=130, anchor="center")
-        self.tabela.column("status", width=80, anchor="center")
+        self.tabela.column("status", width=140, anchor="center")
         
         # Configurar tags para linhas alternadas
         self.tabela.tag_configure("oddrow", background="#F5F5F5")
         self.tabela.tag_configure("evenrow", background="#FFFFFF")
+        self.tabela.tag_configure("sem_pagamento", background="#FFEBEE")
+        self.tabela.tag_configure("em_aberto", background="#E3F2FD")
+        self.tabela.tag_configure("fora_mes", background="#FFF8E1")
 
         self.tabela.pack(fill="both", expand=True)
 
@@ -340,43 +507,18 @@ class ControleDividaApp(tk.Tk):
             if not registros_servidor:
                 return
             
-            # Ordenar por id para garantir ordem cronológica
+            # Ordenar por id para garantir ordem cronológica de criação
             registros_servidor.sort(key=lambda r: r.get("id", 0))
-            
+
             # Processar cada registro
             for reg_servidor in registros_servidor:
-                # Converter para formato local (sem 'id' e 'createdAt')
-                reg_local = {
-                    "mes": reg_servidor.get("mes", len(self.registros) + 1),
-                    "data": reg_servidor.get("data", ""),
-                    "valor": float(reg_servidor.get("valor", 0.0)),
-                    "juros": float(reg_servidor.get("juros", 0.0)),
-                    "amort": float(reg_servidor.get("amort", 0.0)),
-                    "saldo": float(reg_servidor.get("saldo", 0.0)),
-                    "status": reg_servidor.get("status", "Pago"),
-                    "server_id": reg_servidor.get("id")  # Guardar ID do servidor
-                }
-                
+                reg_local = self._normalizar_registro_servidor(reg_servidor)
                 self.registros.append(reg_local)
-                self._adiciona_na_tabela(reg_local)
             
             # Recalcular agregados
             if self.registros:
                 self._recalcular_agregado_e_table()
-                
-                # Atualizar data sugerida para o próximo mês
-                ultima_data_str = self.registros[-1]["data"]
-                try:
-                    d, m, a = ultima_data_str.split("/")
-                    ultima_data = date(int(a), int(m), int(d))
-                    self.data_sugerida = next_month(ultima_data)
-                    
-                    if CALENDARIO_DISPONIVEL:
-                        self.date_picker.set_date(self.data_sugerida)
-                    else:
-                        self.var_data.set(self.data_sugerida.strftime("%d/%m/%Y"))
-                except Exception:
-                    pass
+                self._atualizar_sugestoes_datas()
             
             print(f"✅ Carregados {len(self.registros)} registros do servidor")
             
@@ -390,13 +532,13 @@ class ControleDividaApp(tk.Tk):
 
     # ---------- Máscaras de Input ----------
     
-    def _aplicar_mascara_data(self, event):
+    def _aplicar_mascara_data(self, event, var_data: tk.StringVar, entry_data: ttk.Entry):
         """Aplica máscara de data (dd/mm/aaaa)."""
         # Ignora teclas especiais
         if event.keysym in ('BackSpace', 'Delete', 'Left', 'Right', 'Home', 'End', 'Tab'):
             return
         
-        texto = self.var_data.get()
+        texto = var_data.get()
         
         # Remove tudo que não é dígito
         apenas_numeros = ''.join(c for c in texto if c.isdigit())
@@ -415,10 +557,10 @@ class ControleDividaApp(tk.Tk):
             formatado = apenas_numeros[:2] + '/' + apenas_numeros[2:4] + '/' + apenas_numeros[4:]
         
         # Atualiza o campo
-        self.var_data.set(formatado)
+        var_data.set(formatado)
         
         # Reposiciona cursor no final
-        self.entry_data.icursor(tk.END)
+        entry_data.icursor(tk.END)
 
     # ---------- Lógica ----------
     def _parse_valor(self, texto: str) -> float:
@@ -453,21 +595,9 @@ class ControleDividaApp(tk.Tk):
         except ValueError:
             raise ValueError("Valor inválido. Use formato: 2500 ou 2500,50")
 
-    def _parse_data(self, texto: str) -> date:
-        texto = texto.strip()
-        if not texto:
-            return self.data_sugerida
-        # formatos aceitos: dd/mm/aaaa ou dd/mm/aa
-        try:
-            d, m, a = texto.split("/")
-            d, m, a = int(d), int(m), int(a)
-            if a < 100:
-                a = 2000 + a  # suposição simples
-            return date(a, m, d)
-        except Exception:
-            raise ValueError("Data inválida. Use dd/mm/aaaa.")
-
     def registrar_pagamento(self):
+        # Essa função age exatamente como um 'handleFormSubmit(e)' de um formulário React.
+        # Ela lê os valores dos inputs e repassa para a regra de negócio.
         print("\n" + "🎯 INICIANDO REGISTRO DE PAGAMENTO " + "="*30)
         
         # Pegar valor diretamente do widget Entry
@@ -485,17 +615,15 @@ class ControleDividaApp(tk.Tk):
             self.entry_valor.focus_set()
             return
 
-        # Obter data do calendário ou entrada manual
         print(f"📅 Calendário disponível: {CALENDARIO_DISPONIVEL}")
         try:
+            data_pag = date.today()
             if CALENDARIO_DISPONIVEL:
-                data_pag = self.date_picker.get_date()
-                print(f"📅 Data do calendário: {data_pag}")
+                data_ref = self.date_picker_referencia.get_date()
             else:
-                campo_data = self.var_data.get()
-                print(f"📅 Campo data: '{campo_data}'")
-                data_pag = self._parse_data(campo_data)
-                print(f"📅 Data parseada: {data_pag}")
+                data_ref = self._parse_data(self.var_data_referencia.get(), self.data_referencia_sugerida)
+            print(f"📅 Data de pagamento: {data_pag}")
+            print(f"📆 Data de referência: {data_ref}")
         except ValueError as e:
             print(f"❌ Erro no parse da data: {e}")
             messagebox.showerror("Erro", str(e))
@@ -504,6 +632,46 @@ class ControleDividaApp(tk.Tk):
         status = self.var_status.get() or "Pago"
         print(f"📌 Status: {status}")
 
+        self._registrar_movimento(
+            valor_pago=valor_pago,
+            data_pagamento=data_pag,
+            data_referencia=data_ref,
+            status=status,
+            tipo="pagamento",
+        )
+
+    def registrar_mes_sem_pagamento(self):
+        print("\n" + "📍 REGISTRO DE MÊS SEM PAGAMENTO " + "=" * 24)
+        try:
+            data_pag = date.today()
+            if CALENDARIO_DISPONIVEL:
+                data_ref = self.date_picker_referencia.get_date()
+            else:
+                data_ref = self._parse_data(self.var_data_referencia.get(), self.data_referencia_sugerida)
+        except ValueError as e:
+            messagebox.showerror("Erro", str(e))
+            return
+
+        status = "Sem pagamento"
+        self._registrar_movimento(
+            valor_pago=0.0,
+            data_pagamento=data_pag,
+            data_referencia=data_ref,
+            status=status,
+            tipo="sem_pagamento",
+        )
+
+    def _registrar_movimento(
+        self,
+        valor_pago: float,
+        data_pagamento: date,
+        data_referencia: date,
+        status: str,
+        tipo: str,
+    ):
+        # Essa função é a camada de serviço. Pense nela como uma Action do Redux ou um 
+        # 'useMutation()' do React Query. Ela faz a matemática, atualiza os estados locais
+        # (variáveis de memória) e tenta disparar uma requisição pro back-end (JSON Server).
         if self.saldo_restante <= 0:
             messagebox.showinfo("Concluído", "A dívida já foi quitada!")
             return
@@ -533,22 +701,26 @@ class ControleDividaApp(tk.Tk):
         # Guarda registro
         registro = {
             "mes": len(self.registros) + 1,
-            "data": data_pag.strftime("%d/%m/%Y"),
+            "data_pagamento": format_date_br(data_pagamento),
+            "data_referencia": format_date_br(data_referencia),
+            "data": format_date_br(data_referencia),  # legado
             "valor": valor_pago,
             "juros": juros,
             "amort": amortizacao,
             "saldo": novo_saldo,
             "status": status,
+            "tipo": tipo,
         }
         
         # Debug: mostrar dados calculados
         print("\n" + "="*60)
         print("🔍 DEBUG - DADOS DO REGISTRO")
         print("="*60)
-        print(f"Valor digitado: {valor_digitado}")
-        print(f"Valor parseado: {valor_pago}")
-        print(f"Data selecionada: {data_pag}")
+        print(f"Valor lançado: {valor_pago}")
+        print(f"Data de pagamento: {data_pagamento}")
+        print(f"Data de referência: {data_referencia}")
         print(f"Status: {status}")
+        print(f"Tipo: {tipo}")
         print(f"Modo online: {self.modo_online}")
         print(f"Saldo anterior: R$ {saldo_anterior:,.2f}")
         print(f"Juros (1%): R$ {juros:,.2f}")
@@ -563,11 +735,14 @@ class ControleDividaApp(tk.Tk):
                 registro_servidor = {
                     "mes": registro["mes"],
                     "data": registro["data"],
+                    "data_pagamento": registro["data_pagamento"],
+                    "data_referencia": registro["data_referencia"],
                     "valor": registro["valor"],
                     "juros": registro["juros"],
                     "amort": registro["amort"],
                     "saldo": registro["saldo"],
                     "status": registro["status"],
+                    "tipo": registro["tipo"],
                     "createdAt": datetime.now().isoformat() + "Z"
                 }
                 
@@ -594,16 +769,10 @@ class ControleDividaApp(tk.Tk):
         self.registros.append(registro)
 
         # Atualiza UI
-        self._atualiza_resumos()
-        self._adiciona_na_tabela(registro)
+        self._recalcular_agregado_e_table()
 
         # Preparar próximos campos
-        self.data_sugerida = next_month(data_pag)
-        
-        if CALENDARIO_DISPONIVEL:
-            self.date_picker.set_date(self.data_sugerida)
-        else:
-            self.var_data.set(self.data_sugerida.strftime("%d/%m/%Y"))
+        self._atualizar_sugestoes_datas()
         
         # Limpar campo de valor
         self.var_valor.set("")
@@ -613,25 +782,37 @@ class ControleDividaApp(tk.Tk):
         if self.saldo_restante == 0.0:
             messagebox.showinfo("Parabéns", "Dívida quitada! 🎉")
 
-    def _adiciona_na_tabela(self, reg: dict):
+    def _adiciona_na_tabela(self, reg: dict, reg_index: Optional[int] = None, projetado: bool = False):
         # Determinar tag para cor alternada
         row_count = len(self.tabela.get_children())
         tag = "evenrow" if row_count % 2 == 0 else "oddrow"
-        
-        self.tabela.insert(
+
+        status = reg.get("status", "")
+        tags = [tag]
+        status_lower = status.lower()
+        if "sem pagamento" in status_lower:
+            tags.append("sem_pagamento")
+        elif "em aberto" in status_lower:
+            tags.append("em_aberto")
+        elif "fora do mês" in status_lower:
+            tags.append("fora_mes")
+
+        item_id = self.tabela.insert(
             "",
             "end",
             values=(
                 reg["mes"],
-                reg["data"],
+                reg["data_pagamento"],
+                reg["data_referencia"],
                 format_brl(reg["valor"]),
-                format_brl(reg["juros"]),
-                format_brl(reg["amort"]),
-                format_brl(reg["saldo"]),
+                f"~{format_brl(reg['juros'])}" if projetado else format_brl(reg["juros"]),
+                f"~{format_brl(reg['amort'])}" if projetado else format_brl(reg["amort"]),
+                f"~{format_brl(reg['saldo'])}" if projetado else format_brl(reg["saldo"]),
                 reg["status"],
             ),
-            tags=(tag,)
+            tags=tuple(tags),
         )
+        self.item_to_reg_index[item_id] = reg_index
 
     def _atualiza_resumos(self):
         total_fmt = format_brl(self.total_pago)
@@ -643,16 +824,36 @@ class ControleDividaApp(tk.Tk):
         if hasattr(self, "label_total"):
             self.label_total.config(text=total_fmt)
 
+        lacunas = self._listar_lacunas_referencia()
+        if lacunas:
+            exemplo = format_date_br(lacunas[0])
+            self.var_alerta_referencia.set(
+                f"Há {len(lacunas)} mês(es) de referência sem registro (ex.: {exemplo}). "
+                f"Use 'Registrar mês sem pagamento' se realmente não houve pagamento."
+            )
+        elif self.referencia_em_aberto:
+            juros_estimado = round(self.saldo_restante * self.taxa, 2)
+            self.var_alerta_referencia.set(
+                f"Referência em aberto: {format_date_br(self.referencia_em_aberto)} "
+                f"(juros estimados: {format_brl(juros_estimado)})."
+            )
+        else:
+            self.var_alerta_referencia.set("")
+
     def alternar_status_selecao(self):
         sel = self.tabela.selection()
         if not sel:
             messagebox.showinfo("Aviso", "Selecione uma linha para alternar o status.")
             return
         item_id = sel[0]
-        idx = self.tabela.index(item_id)
-        if idx < 0 or idx >= len(self.registros):
+        idx = self.item_to_reg_index.get(item_id)
+        if idx is None or idx < 0 or idx >= len(self.registros):
+            messagebox.showinfo("Aviso", "Essa linha é apenas projeção visual e não pode ter status alterado.")
             return
         atual = self.registros[idx]["status"]
+        if self.registros[idx].get("tipo") == "sem_pagamento":
+            messagebox.showinfo("Aviso", "Registros de mês sem pagamento não alternam para Pago/Pendente.")
+            return
         novo = "Pendente" if atual == "Pago" else "Pago"
         
         # Tentar atualizar no servidor
@@ -670,10 +871,7 @@ class ControleDividaApp(tk.Tk):
                 )
         
         self.registros[idx]["status"] = novo
-        # Atualiza somente a coluna de status na view (reinsere valores)
-        vals = list(self.tabela.item(item_id, "values"))
-        vals[-1] = novo
-        self.tabela.item(item_id, values=vals)
+        self._recalcular_agregado_e_table()
 
     def desfazer_ultimo(self):
         if not self.registros:
@@ -717,12 +915,9 @@ class ControleDividaApp(tk.Tk):
         for item in self.tabela.get_children():
             self.tabela.delete(item)
         self._atualiza_resumos()
-        self.data_sugerida = date.today()
-        
-        if CALENDARIO_DISPONIVEL:
-            self.date_picker.set_date(self.data_sugerida)
-        else:
-            self.var_data.set(self.data_sugerida.strftime("%d/%m/%Y"))
+        self.data_referencia_sugerida = self._data_referencia_inicial()
+        self.referencia_em_aberto = self.data_referencia_sugerida
+        self._atualizar_campos_data_ui()
         
         self.var_valor.set("")
         self.var_status.set("Pago")
@@ -774,12 +969,10 @@ class ControleDividaApp(tk.Tk):
             # Atualizar resumos
             self._atualiza_resumos()
             
-            # Resetar data sugerida
-            self.data_sugerida = date.today()
-            if CALENDARIO_DISPONIVEL:
-                self.date_picker.set_date(self.data_sugerida)
-            else:
-                self.var_data.set(self.data_sugerida.strftime("%d/%m/%Y"))
+            # Resetar datas sugeridas
+            self.data_referencia_sugerida = self._data_referencia_inicial()
+            self.referencia_em_aberto = self.data_referencia_sugerida
+            self._atualizar_campos_data_ui()
             
             self.var_valor.set("")
             self.var_status.set("Pago")
@@ -822,12 +1015,38 @@ class ControleDividaApp(tk.Tk):
         """Recalcula total_pago e saldo_restante percorrendo registros; re-renderiza tabela."""
         self.total_pago = 0.0
         self.saldo_restante = self.divida_inicial
+        self.item_to_reg_index = {}
 
         # Limpa tabela e re-insere com mês reindexado
         for item in self.tabela.get_children():
             self.tabela.delete(item)
 
+        self.registros.sort(key=lambda reg: (self._data_referencia_registro(reg), reg.get("server_id", 0)))
+
+        referencia_anterior = None
         for i, reg in enumerate(self.registros, start=1):
+            referencia_atual = self._data_referencia_registro(reg)
+
+            if referencia_anterior is not None:
+                cursor = next_month(referencia_anterior)
+                saldo_projecao = self.saldo_restante
+                while cursor < referencia_atual:
+                    juros_proj = round(saldo_projecao * self.taxa, 2)
+                    amort_proj = round(-juros_proj, 2)
+                    saldo_projecao = round(saldo_projecao + juros_proj, 2)
+                    linha_lacuna = {
+                        "mes": "—",
+                        "data_pagamento": "—",
+                        "data_referencia": format_date_br(cursor),
+                        "valor": 0.0,
+                        "juros": juros_proj,
+                        "amort": amort_proj,
+                        "saldo": saldo_projecao,
+                        "status": "Sem pagamento (não registrado)",
+                    }
+                    self._adiciona_na_tabela(linha_lacuna, reg_index=None, projetado=True)
+                    cursor = next_month(cursor)
+
             saldo_anterior = self.saldo_restante
             juros = round(saldo_anterior * self.taxa, 2)
             amort = round(reg["valor"] - juros, 2)
@@ -843,11 +1062,22 @@ class ControleDividaApp(tk.Tk):
             self.saldo_restante = novo_saldo
 
             reg["mes"] = i
+            reg["data_referencia"] = format_date_br(referencia_atual)
+            reg["data"] = reg["data_referencia"]
+            if not reg.get("data_pagamento"):
+                reg["data_pagamento"] = reg["data_referencia"]
             reg["juros"] = juros
             reg["amort"] = amort
             reg["saldo"] = novo_saldo
+            reg_exibicao = dict(reg)
+            reg_exibicao["status"] = self._status_exibicao(reg)
+            self._adiciona_na_tabela(reg_exibicao, reg_index=i - 1)
+            referencia_anterior = referencia_atual
 
-            self._adiciona_na_tabela(reg)
+        if referencia_anterior is None:
+            self.referencia_em_aberto = self._data_referencia_inicial()
+        else:
+            self.referencia_em_aberto = next_month(referencia_anterior)
 
         self._atualiza_resumos()
 

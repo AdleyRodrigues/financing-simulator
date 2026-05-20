@@ -34,6 +34,11 @@ def _fazer_requisicao(
     """
     Faz uma requisição HTTP ao JSON Server.
     
+    [Para devs JS/React]: Essa função é o equivalente exato a criar um wrapper 
+    em volta do fetch() nativo ou configurar uma instância do Axios (axios.create()).
+    Ela centraliza os headers (Content-Type: application/json), transforma o payload 
+    em string (JSON.stringify), trata as respostas e gerencia erros de rede.
+    
     Args:
         url: URL completa do endpoint
         metodo: GET, POST, PATCH, DELETE, etc.
@@ -58,11 +63,13 @@ def _fazer_requisicao(
         headers = {"Content-Type": "application/json"}
         
         if dados is not None:
+            # Equivale a: body = JSON.stringify(dados)
             data_bytes = json.dumps(dados).encode('utf-8')
             req = urllib.request.Request(url, data=data_bytes, headers=headers, method=metodo)
         else:
             req = urllib.request.Request(url, headers=headers, method=metodo)
         
+        # Equivale a: const response = await fetch(req)
         with urllib.request.urlopen(req, timeout=timeout) as response:
             print(f"[PERSISTENCE] Status: {response.status}")
             

@@ -34,9 +34,11 @@ env/
 *~
 .DS_Store
 
-# JSON Server (não ignorar db.json, mas sim backups)
+# Banco de Dados local e Configurações (Ignorados por conter dados pessoais/locais)
+db.json
+config.json
+servidor/db.json
 db-*.json
-
 # Logs
 *.log
 

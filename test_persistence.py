@@ -42,7 +42,12 @@ def teste_crud():
         registros = persistence.read_all_registros()
         print(f"✅ Encontrados {len(registros)} registros")
         for reg in registros:
-            print(f"   - Mês {reg['mes']}: {reg['data']} - R$ {reg['valor']:.2f} ({reg['status']})")
+            data_pagamento = reg.get("data_pagamento") or reg.get("data", "-")
+            data_referencia = reg.get("data_referencia") or reg.get("data", "-")
+            print(
+                f"   - Mês {reg['mes']}: pago em {data_pagamento}, "
+                f"ref. {data_referencia} - R$ {reg['valor']:.2f} ({reg['status']})"
+            )
     except Exception as e:
         print(f"❌ Erro ao listar: {e}")
         return
@@ -52,11 +57,14 @@ def teste_crud():
     novo_registro = {
         "mes": len(registros) + 1,
         "data": datetime.now().strftime("%d/%m/%Y"),
+        "data_pagamento": datetime.now().strftime("%d/%m/%Y"),
+        "data_referencia": datetime.now().strftime("%d/%m/%Y"),
         "valor": 1000.00,
         "juros": 500.00,
         "amort": 500.00,
         "saldo": 49000.00,
         "status": "Pago",
+        "tipo": "pagamento",
         "createdAt": datetime.now().isoformat() + "Z"
     }
     
