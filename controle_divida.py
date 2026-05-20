@@ -347,6 +347,10 @@ class ControleDividaApp(tk.Tk):
         else:
             self.entry_data_referencia = ttk.Entry(form, width=14, textvariable=self.var_data_referencia)
             self.entry_data_referencia.grid(row=1, column=1, sticky="w", padx=(12, 0), pady=(2, 0))
+            
+            # O .bind() equivale ao 'onChange' ou 'onKeyUp' em elementos HTML (<input onKeyUp={...}>)
+            # "<KeyRelease>" é o evento disparado quando o usuário solta uma tecla do teclado.
+            # O 'lambda event:' funciona igual uma arrow function no JS: (event) => _aplicar_mascara_data()
             self.entry_data_referencia.bind(
                 "<KeyRelease>",
                 lambda event: self._aplicar_mascara_data(event, self.var_data_referencia, self.entry_data_referencia),
@@ -1013,6 +1017,9 @@ class ControleDividaApp(tk.Tk):
 
     def _recalcular_agregado_e_table(self):
         """Recalcula total_pago e saldo_restante percorrendo registros; re-renderiza tabela."""
+        # [Para devs JS/React]: Note a palavra 'self' usada o tempo todo. 
+        # O 'self' no Python é a EXATA mesma coisa que o 'this' no JavaScript!
+        # Ele serve para acessar as variáveis da instância atual da classe.
         self.total_pago = 0.0
         self.saldo_restante = self.divida_inicial
         self.item_to_reg_index = {}
@@ -1024,6 +1031,9 @@ class ControleDividaApp(tk.Tk):
         self.registros.sort(key=lambda reg: (self._data_referencia_registro(reg), reg.get("server_id", 0)))
 
         referencia_anterior = None
+        
+        # O enumerate() devolve o índice e o item em cada volta do laço.
+        # Em JS, isso seria o equivalente a: registros.forEach((reg, index) => { ... })
         for i, reg in enumerate(self.registros, start=1):
             referencia_atual = self._data_referencia_registro(reg)
 
@@ -1083,6 +1093,8 @@ class ControleDividaApp(tk.Tk):
 
 
 def main():
+    app = ControleDividaApp()
+    
     try:
         style = ttk.Style()
         if "vista" in style.theme_names():
@@ -1092,7 +1104,6 @@ def main():
     except Exception:
         pass
 
-    app = ControleDividaApp()
     app.mainloop()
 
 
