@@ -1,272 +1,313 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Camada de persistência para comunicação com JSON Server.
-Usa apenas bibliotecas padrão do Python (urllib).
+Camada de persistência — 100% Python com SQLite nativo.
+
+Anteriormente, essa camada usava HTTP (urllib) para se comunicar com um
+servidor json-server rodando em Node.js. A arquitetura foi migrada para
+SQLite puro, eliminando a dependência do Node.js e ganhando em velocidade,
+simplicidade e robustez.
+
+Todas as funções públicas mantêm as mesmas assinaturas da versão anterior,
+garantindo que o controle_divida.py não precise de nenhuma alteração.
 """
 
-import json
-import urllib.request
-import urllib.error
-import http.client
-import time
+import sqlite3
+import os
+import sys
+
+# Garante que o print funciona com emojis e acentos no terminal Windows
+if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
 from typing import List, Dict, Optional, Any
 
-# Configuração
-BASE_URL = "http://localhost:3000"
-TIMEOUT = 3  # segundos
-PERSISTENCIA_ATIVA = True
-MAX_RETRIES = 3  # número máximo de tentativas
-RETRY_DELAY = 0.5  # segundos entre tentativas
+# ─────────────────────────────────────────────
+# Configuração do banco de dados
+# ─────────────────────────────────────────────
+
+# O banco fica na mesma pasta deste arquivo (raiz do projeto)
+_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(_DIR, "dados.db")
 
 
 class PersistenceError(Exception):
-    """Erro genérico de persistência."""
+    """Erro genérico de persistência — mantido para compatibilidade com o código que chama essa camada."""
     pass
 
 
-def _fazer_requisicao(
-    url: str,
-    metodo: str = "GET",
-    dados: Optional[Dict[str, Any]] = None,
-    timeout: int = TIMEOUT
-) -> Optional[Dict[str, Any]]:
+# ─────────────────────────────────────────────
+# Inicialização do banco (cria tabelas se não existirem)
+# Equivalente a uma "migration" no mundo ORM/Sequelize/Prisma
+# ─────────────────────────────────────────────
+
+def _inicializar_banco() -> None:
     """
-    Faz uma requisição HTTP ao JSON Server.
-    
-    [Para devs JS/React]: Essa função é o equivalente exato a criar um wrapper 
-    em volta do fetch() nativo ou configurar uma instância do Axios (axios.create()).
-    Ela centraliza os headers (Content-Type: application/json), transforma o payload 
-    em string (JSON.stringify), trata as respostas e gerencia erros de rede.
-    
-    Args:
-        url: URL completa do endpoint
-        metodo: GET, POST, PATCH, DELETE, etc.
-        dados: Dicionário a ser enviado como JSON (para POST/PATCH)
-        timeout: Timeout da requisição em segundos
-    
-    Returns:
-        Dicionário com a resposta JSON ou None
-    
-    Raises:
-        PersistenceError: Se houver erro de rede ou HTTP
+    Cria as tabelas no banco SQLite caso ainda não existam.
+    Chamada automaticamente na primeira operação — o usuário não precisa fazer nada.
+
+    [Para devs JS]: Equivale a rodar 'prisma migrate dev' ou o CREATE TABLE
+    do Sequelize na inicialização do servidor. Aqui usamos 'IF NOT EXISTS'
+    para ser idempotente (pode ser chamada várias vezes sem erro).
     """
-    if not PERSISTENCIA_ATIVA:
-        raise PersistenceError("Persistência desativada")
-    
-    # LOG: Requisição iniciada
-    print(f"[PERSISTENCE] {metodo} {url}")
-    if dados:
-        print(f"[PERSISTENCE] Dados: {json.dumps(dados, indent=2)}")
-    
+    conn = sqlite3.connect(DB_PATH)
     try:
-        headers = {"Content-Type": "application/json"}
-        
-        if dados is not None:
-            # Equivale a: body = JSON.stringify(dados)
-            data_bytes = json.dumps(dados).encode('utf-8')
-            req = urllib.request.Request(url, data=data_bytes, headers=headers, method=metodo)
-        else:
-            req = urllib.request.Request(url, headers=headers, method=metodo)
-        
-        # Equivale a: const response = await fetch(req)
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            print(f"[PERSISTENCE] Status: {response.status}")
-            
-            if response.status == 204:  # No Content (DELETE bem-sucedido)
-                print(f"[PERSISTENCE] ✅ {metodo} bem-sucedido (No Content)")
-                return None
-            
-            body = response.read().decode('utf-8')
-            if not body:
-                print(f"[PERSISTENCE] ⚠️  Resposta vazia")
-                return None
-            
-            resultado = json.loads(body)
-            print(f"[PERSISTENCE] ✅ Resposta recebida")
-            return resultado
-    
-    except urllib.error.HTTPError as e:
-        print(f"[PERSISTENCE] ❌ Erro HTTP {e.code}: {e.reason}")
-        raise PersistenceError(f"Erro HTTP {e.code}: {e.reason}")
-    except urllib.error.URLError as e:
-        erro_msg = str(e.reason)
-        print(f"[PERSISTENCE] ❌ Erro de conexão: {erro_msg}")
-        # Mensagem mais amigável para erro de conexão
-        if "Connection refused" in erro_msg or "closed connection" in erro_msg.lower():
-            raise PersistenceError("Servidor não está disponível. Inicie o JSON Server com 'pnpm start' na pasta servidor/")
-        raise PersistenceError(f"Erro de conexão: {erro_msg}")
-    except json.JSONDecodeError as e:
-        print(f"[PERSISTENCE] ❌ Erro ao decodificar JSON: {e}")
-        raise PersistenceError(f"Erro ao decodificar JSON: {e}")
-    except http.client.RemoteDisconnected as e:
-        print(f"[PERSISTENCE] ❌ Conexão fechada pelo servidor: {e}")
-        raise PersistenceError(f"Servidor fechou a conexão. Tente novamente.")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS registros (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                mes          INTEGER,
+                data         TEXT,
+                data_pagamento TEXT,
+                data_referencia TEXT,
+                valor        REAL,
+                juros        REAL,
+                amort        REAL,
+                saldo        REAL,
+                status       TEXT,
+                tipo         TEXT,
+                created_at   TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS config (
+                id             INTEGER PRIMARY KEY,
+                divida_inicial REAL,
+                taxa           REAL
+            )
+        """)
+        conn.commit()
+        print(f"[PERSISTENCE] ✅ Banco SQLite inicializado em: {DB_PATH}")
+    finally:
+        conn.close()
+
+
+# Inicializa o banco ao importar o módulo
+_inicializar_banco()
+
+
+# ─────────────────────────────────────────────
+# Funções auxiliares internas
+# ─────────────────────────────────────────────
+
+def _get_conn() -> sqlite3.Connection:
+    """
+    Retorna uma conexão SQLite com row_factory configurada para
+    devolver dicionários em vez de tuplas — igual ao comportamento
+    do json-server que devolvia objetos JSON.
+
+    [Para devs JS]: row_factory = sqlite3.Row é como fazer um .toJSON()
+    automático em cada linha retornada pelo banco.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row  # rows viram dict-like, ex: row["id"]
+    return conn
+
+
+def _row_to_dict(row) -> Dict[str, Any]:
+    """Converte uma Row do SQLite em dicionário Python puro."""
+    return dict(row)
+
+
+# ─────────────────────────────────────────────
+# API Pública — mesmas assinaturas da versão anterior com urllib
+# ─────────────────────────────────────────────
+
+def verificar_conexao() -> bool:
+    """
+    Verifica se o banco de dados está acessível.
+
+    Antes: fazia GET http://localhost:3000/registros e verificava o status HTTP.
+    Agora: simplesmente tenta abrir o arquivo .db no disco.
+
+    Returns:
+        True se o banco estiver acessível, False caso contrário.
+    """
+    print(f"[PERSISTENCE] 🔍 Verificando banco SQLite em: {DB_PATH}")
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("SELECT 1")
+        conn.close()
+        print("[PERSISTENCE] ✅ Banco acessível!")
+        return True
     except Exception as e:
-        print(f"[PERSISTENCE] ❌ Erro inesperado: {e}")
-        raise PersistenceError(f"Erro inesperado: {e}")
+        print(f"[PERSISTENCE] ❌ Erro ao acessar banco: {e}")
+        return False
 
 
 def read_all_registros() -> List[Dict[str, Any]]:
     """
-    Busca todos os registros do servidor.
-    
+    Busca todos os registros do banco, ordenados por id.
+
+    Antes: GET http://localhost:3000/registros
+    Agora: SELECT * FROM registros ORDER BY id
+
     Returns:
-        Lista de dicionários com os registros
-    
-    Raises:
-        PersistenceError: Se houver erro na requisição
+        Lista de dicionários com os registros.
     """
     print("[PERSISTENCE] 📖 Lendo todos os registros...")
-    url = f"{BASE_URL}/registros"
-    resultado = _fazer_requisicao(url, metodo="GET")
-    total = len(resultado) if resultado else 0
-    print(f"[PERSISTENCE] 📖 Total de registros: {total}")
-    return resultado if resultado is not None else []
+    try:
+        conn = _get_conn()
+        cursor = conn.execute("SELECT * FROM registros ORDER BY id")
+        rows = [_row_to_dict(row) for row in cursor.fetchall()]
+        conn.close()
+        print(f"[PERSISTENCE] 📖 Total de registros: {len(rows)}")
+        return rows
+    except Exception as e:
+        raise PersistenceError(f"Erro ao ler registros: {e}")
 
 
 def create_registro(item: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Cria um novo registro no servidor.
-    
+    Cria um novo registro no banco.
+
+    Antes: POST http://localhost:3000/registros (com body JSON)
+    Agora: INSERT INTO registros VALUES (...)
+
     Args:
-        item: Dicionário com os dados do registro (sem 'id', será gerado pelo servidor)
-    
+        item: Dicionário com os dados do registro.
+
     Returns:
-        Dicionário com o registro criado (incluindo 'id' gerado)
-    
-    Raises:
-        PersistenceError: Se houver erro na requisição
+        O registro criado, incluindo o 'id' gerado pelo banco.
     """
-    print(f"[PERSISTENCE] ➕ Criando registro (Mês {item.get('mes', '?')})...")
-    url = f"{BASE_URL}/registros"
-    resultado = _fazer_requisicao(url, metodo="POST", dados=item)
-    print(f"[PERSISTENCE] ➕ Registro criado com ID: {resultado.get('id', '?')}")
-    return resultado
+    print(f"[PERSISTENCE] ➕ Criando registro...")
+    try:
+        conn = _get_conn()
+        cursor = conn.execute(
+            """
+            INSERT INTO registros
+                (mes, data, data_pagamento, data_referencia,
+                 valor, juros, amort, saldo, status, tipo, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                item.get("mes"),
+                item.get("data"),
+                item.get("data_pagamento"),
+                item.get("data_referencia"),
+                item.get("valor"),
+                item.get("juros"),
+                item.get("amort"),
+                item.get("saldo"),
+                item.get("status"),
+                item.get("tipo"),
+                item.get("createdAt"),
+            )
+        )
+        conn.commit()
+        novo_id = cursor.lastrowid  # equivale ao 'id' retornado pelo json-server no POST
+
+        # Busca o registro recém criado para devolver completo (mesmo comportamento de antes)
+        row = conn.execute("SELECT * FROM registros WHERE id = ?", (novo_id,)).fetchone()
+        conn.close()
+
+        resultado = _row_to_dict(row)
+        print(f"[PERSISTENCE] ✅ Registro criado com ID: {novo_id}")
+        return resultado
+    except Exception as e:
+        raise PersistenceError(f"Erro ao criar registro: {e}")
 
 
-def update_registro(registro_id: int, patch: Dict[str, Any]) -> Dict[str, Any]:
+def update_registro(registro_id: int, dados: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Atualiza parcialmente um registro existente.
-    
+    Atualiza campos de um registro existente.
+
+    Antes: PATCH http://localhost:3000/registros/:id
+    Agora: UPDATE registros SET campo=? WHERE id=?
+
     Args:
-        registro_id: ID do registro a ser atualizado
-        patch: Dicionário com os campos a serem atualizados
-    
+        registro_id: ID do registro a atualizar.
+        dados: Dicionário com os campos e novos valores.
+
     Returns:
-        Dicionário com o registro atualizado
-    
-    Raises:
-        PersistenceError: Se houver erro na requisição
+        O registro atualizado.
     """
-    print(f"[PERSISTENCE] ✏️  Atualizando registro ID {registro_id}...")
-    url = f"{BASE_URL}/registros/{registro_id}"
-    resultado = _fazer_requisicao(url, metodo="PATCH", dados=patch)
-    print(f"[PERSISTENCE] ✏️  Registro {registro_id} atualizado")
-    return resultado
+    print(f"[PERSISTENCE] ✏️  Atualizando registro ID={registro_id}...")
+    if not dados:
+        raise PersistenceError("Nenhum campo para atualizar.")
+    try:
+        # Monta o SET dinamicamente com base nas chaves do dicionário 'dados'
+        # Ex: {"status": "Pago"} → "SET status = ?"
+        campos = ", ".join(f"{k} = ?" for k in dados.keys())
+        valores = list(dados.values()) + [registro_id]
+
+        conn = _get_conn()
+        conn.execute(f"UPDATE registros SET {campos} WHERE id = ?", valores)
+        conn.commit()
+
+        row = conn.execute("SELECT * FROM registros WHERE id = ?", (registro_id,)).fetchone()
+        conn.close()
+
+        if row is None:
+            raise PersistenceError(f"Registro ID={registro_id} não encontrado.")
+
+        resultado = _row_to_dict(row)
+        print(f"[PERSISTENCE] ✅ Registro ID={registro_id} atualizado.")
+        return resultado
+    except PersistenceError:
+        raise
+    except Exception as e:
+        raise PersistenceError(f"Erro ao atualizar registro: {e}")
 
 
 def delete_registro(registro_id: int) -> None:
     """
-    Remove um registro do servidor com retry automático.
-    
+    Deleta um registro pelo ID.
+
+    Antes: DELETE http://localhost:3000/registros/:id
+    Agora: DELETE FROM registros WHERE id=?
+
     Args:
-        registro_id: ID do registro a ser removido
-    
-    Raises:
-        PersistenceError: Se houver erro na requisição após todas as tentativas
+        registro_id: ID do registro a deletar.
     """
-    print(f"[PERSISTENCE] 🗑️  Deletando registro ID {registro_id}...")
-    url = f"{BASE_URL}/registros/{registro_id}"
-    
-    for tentativa in range(MAX_RETRIES):
-        try:
-            _fazer_requisicao(url, metodo="DELETE")
-            print(f"[PERSISTENCE] 🗑️  Registro {registro_id} deletado")
-            return
-        except PersistenceError as e:
-            if "fechou a conexão" in str(e) and tentativa < MAX_RETRIES - 1:
-                print(f"[PERSISTENCE] ⚠️  Tentativa {tentativa + 1} falhou, aguardando...")
-                time.sleep(RETRY_DELAY * (tentativa + 1))  # Delay progressivo
-                continue
-            raise
+    print(f"[PERSISTENCE] 🗑️  Deletando registro ID={registro_id}...")
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("DELETE FROM registros WHERE id = ?", (registro_id,))
+        conn.commit()
+        conn.close()
+        print(f"[PERSISTENCE] ✅ Registro ID={registro_id} deletado.")
+    except Exception as e:
+        raise PersistenceError(f"Erro ao deletar registro: {e}")
 
 
 def delete_todos_registros() -> None:
     """
-    Remove todos os registros do servidor.
-    Faz múltiplas requisições DELETE com delay entre elas para evitar sobrecarga.
-    
-    Raises:
-        PersistenceError: Se houver erro na requisição
-    """
-    print("[PERSISTENCE] 🗑️  Deletando TODOS os registros...")
-    registros = read_all_registros()
-    total = len(registros)
-    print(f"[PERSISTENCE] 🗑️  Total a deletar: {total}")
-    
-    erros = []
-    for i, reg in enumerate(registros, 1):
-        if "id" in reg:
-            print(f"[PERSISTENCE] 🗑️  Deletando {i}/{total}...")
-            try:
-                delete_registro(reg["id"])
-                # Pequeno delay entre requisições para não sobrecarregar o servidor
-                if i < total:
-                    time.sleep(0.1)
-            except PersistenceError as e:
-                print(f"[PERSISTENCE] ⚠️  Falha ao deletar ID {reg['id']}: {e}")
-                erros.append((reg["id"], str(e)))
-                continue
-    
-    if erros:
-        print(f"[PERSISTENCE] ⚠️  Alguns registros falharam: {len(erros)} erro(s)")
-        # Não lançar exceção se pelo menos alguns foram deletados
-        if len(erros) < total:
-            print(f"[PERSISTENCE] ✅ {total - len(erros)}/{total} registros deletados")
-        else:
-            raise PersistenceError(f"Falha ao deletar todos os registros. Primeira falha: {erros[0][1]}")
-    else:
-        print(f"[PERSISTENCE] 🗑️  Todos os {total} registros foram deletados")
+    Deleta todos os registros do banco de uma só vez.
 
-
-def read_config() -> Dict[str, Any]:
+    Antes: Loop de requisições DELETE para cada ID encontrado.
+    Agora: DELETE FROM registros (uma única operação SQL — muito mais rápido).
     """
-    Busca a configuração do servidor.
-    
-    Returns:
-        Dicionário com a configuração (divida_inicial, taxa)
-    
-    Raises:
-        PersistenceError: Se houver erro na requisição
-    """
-    url = f"{BASE_URL}/config"
-    resultado = _fazer_requisicao(url, metodo="GET")
-    
-    # JSON Server retorna array, pegamos o primeiro item
-    if isinstance(resultado, list) and len(resultado) > 0:
-        return resultado[0]
-    
-    # Fallback: valores padrão
-    return {"divida_inicial": 50000.0, "taxa": 0.01}
-
-
-def verificar_conexao() -> bool:
-    """
-    Verifica se o JSON Server está acessível.
-    
-    Returns:
-        True se conectou com sucesso, False caso contrário
-    """
-    if not PERSISTENCIA_ATIVA:
-        print("[PERSISTENCE] ⚠️  Persistência desativada")
-        return False
-    
-    print(f"[PERSISTENCE] 🔍 Verificando conexão com {BASE_URL}...")
+    print("[PERSISTENCE] 🗑️  Deletando todos os registros...")
     try:
-        _fazer_requisicao(f"{BASE_URL}/registros", metodo="GET", timeout=2)
-        print("[PERSISTENCE] ✅ Conexão estabelecida!")
-        return True
-    except PersistenceError as e:
-        print(f"[PERSISTENCE] ❌ Falha na conexão: {e}")
-        return False
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("DELETE FROM registros")
+        conn.commit()
+        conn.close()
+        print("[PERSISTENCE] ✅ Todos os registros deletados.")
+    except Exception as e:
+        raise PersistenceError(f"Erro ao deletar registros: {e}")
+
+
+def read_config() -> Optional[Dict[str, Any]]:
+    """
+    Lê a configuração salva no banco (dívida inicial e taxa de juros).
+
+    Antes: GET http://localhost:3000/config
+    Agora: SELECT * FROM config LIMIT 1
+
+    Returns:
+        Dicionário com a configuração ou None se não houver.
+    """
+    print("[PERSISTENCE] ⚙️  Lendo configuração do banco...")
+    try:
+        conn = _get_conn()
+        row = conn.execute("SELECT * FROM config LIMIT 1").fetchone()
+        conn.close()
+        if row:
+            return _row_to_dict(row)
+        return None
+    except Exception as e:
+        raise PersistenceError(f"Erro ao ler configuração: {e}")

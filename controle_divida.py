@@ -161,6 +161,7 @@ class ControleDividaApp(tk.Tk):
         self.taxa = TAXA_JUROS
         self.registros = []  # lista de dicts com as colunas
         self.total_pago = 0.0
+        self.total_juros = 0.0  # somatório de todos os juros pagos até agora
         self.saldo_restante = self.divida_inicial
         
         # Controle de persistência
@@ -328,6 +329,12 @@ class ControleDividaApp(tk.Tk):
         self.entry_valor = ttk.Entry(form, width=16, textvariable=self.var_valor)
         self.entry_valor.grid(row=1, column=0, sticky="w", pady=(2, 0))
 
+        # Preview em tempo real do valor formatado em BRL
+        # Equivalente React: um <span> atualizado pelo onChange do input
+        self.label_valor_preview = ttk.Label(form, text="", font=("Segoe UI", 8), foreground="#2E7D32")
+        self.label_valor_preview.grid(row=2, column=0, sticky="w", pady=(1, 0))
+        self.entry_valor.bind("<KeyRelease>", self._atualizar_preview_valor)
+
         # Somente data de referência combinada (data de pagamento = hoje automaticamente)
         ttk.Label(form, text="Ref. combinada:").grid(row=0, column=1, sticky="w", padx=(12, 0))
 
@@ -381,27 +388,64 @@ class ControleDividaApp(tk.Tk):
         self.btn_sem_pagamento = ttk.Button(form, text="Registrar mês sem pagamento", command=self.registrar_mes_sem_pagamento)
         self.btn_sem_pagamento.grid(row=1, column=4, padx=(8, 0))
 
-        # Info: Total Pago + ações
-        info = ttk.Frame(self, padding=(12, 8, 12, 0))
-        info.pack(fill="x", padx=12, pady=(6, 0))
+        # Barra de KPIs — 3 cartões de resumo lado a lado
+        kpi_bar = ttk.Frame(self, padding=(12, 10, 12, 4))
+        kpi_bar.pack(fill="x")
 
-        caixa_total = ttk.Frame(info)
-        caixa_total.pack(side="left")
-        ttk.Label(caixa_total, text="Total Pago", font=("Segoe UI", 9, "bold")).pack(anchor="w")
         bg = self.cget("background")
-        self.label_total = tk.Label(
-            caixa_total,
-            text=format_brl(self.total_pago),
-            font=("Segoe UI", 14, "bold"),
-            fg="#2E7D32",
-            bg=bg,
-        )
-        self.label_total.pack(anchor="w")
 
-        caixa_acoes = ttk.Frame(info)
-        caixa_acoes.pack(side="right")
-        self.btn_limpar = ttk.Button(caixa_acoes, text="Limpar Histórico", command=self.limpar_historico)
-        self.btn_limpar.pack(side="right", padx=(0, 8))
+        # --- Card 1: Total Pago ---
+        card_pago = tk.Frame(kpi_bar, bg="#E8F5E9", relief="solid", bd=1)
+        card_pago.pack(side="left", padx=(0, 8), ipadx=14, ipady=8)
+        tk.Label(card_pago, text="💸  Total Pago",
+                 font=("Segoe UI", 8, "bold"), bg="#E8F5E9", fg="#388E3C").pack(anchor="w", padx=8, pady=(6, 0))
+        self.label_total = tk.Label(
+            card_pago,
+            text=format_brl(self.total_pago),
+            font=("Segoe UI", 15, "bold"),
+            fg="#2E7D32", bg="#E8F5E9",
+        )
+        self.label_total.pack(anchor="w", padx=8, pady=(2, 6))
+
+        # --- Card 2: Dívida Restante (mais importante, maior) ---
+        card_saldo = tk.Frame(kpi_bar, bg="#FFF3E0", relief="solid", bd=1)
+        card_saldo.pack(side="left", padx=(0, 8), ipadx=14, ipady=8)
+        tk.Label(card_saldo, text="📊  Dívida Restante",
+                 font=("Segoe UI", 8, "bold"), bg="#FFF3E0", fg="#E65100").pack(anchor="w", padx=8, pady=(6, 0))
+        self.label_saldo = tk.Label(
+            card_saldo,
+            text=format_brl(self.saldo_restante),
+            font=("Segoe UI", 15, "bold"),
+            fg="#BF360C", bg="#FFF3E0",
+        )
+        self.label_saldo.pack(anchor="w", padx=8, pady=(2, 6))
+
+        # --- Card 3: Total em Juros Pagos ---
+        card_juros = tk.Frame(kpi_bar, bg="#FFF8E1", relief="solid", bd=1)
+        card_juros.pack(side="left", ipadx=14, ipady=8)
+        tk.Label(card_juros, text="⚠️  Juros Pagos",
+                 font=("Segoe UI", 8, "bold"), bg="#FFF8E1", fg="#F57F17").pack(anchor="w", padx=8, pady=(6, 0))
+        self.label_juros_total = tk.Label(
+            card_juros,
+            text=format_brl(self.total_juros),
+            font=("Segoe UI", 15, "bold"),
+            fg="#E65100", bg="#FFF8E1",
+        )
+        self.label_juros_total.pack(anchor="w", padx=8, pady=(2, 6))
+
+        # --- Botão destrutivo: Limpar Histórico (vermelho) ---
+        btn_frame = tk.Frame(kpi_bar, bg=bg)
+        btn_frame.pack(side="right")
+        self.btn_limpar = tk.Button(
+            btn_frame,
+            text="🗑  Limpar Histórico",
+            command=self.limpar_historico,
+            bg="#C62828", fg="white",
+            activebackground="#B71C1C", activeforeground="white",
+            font=("Segoe UI", 9, "bold"),
+            relief="flat", padx=10, pady=6, cursor="hand2",
+        )
+        self.btn_limpar.pack()
 
     def _build_table(self):
         bloco = ttk.Frame(self, padding=(12, 4, 12, 8))
@@ -535,7 +579,54 @@ class ControleDividaApp(tk.Tk):
             self.modo_online = False
 
     # ---------- Máscaras de Input ----------
-    
+
+    def _atualizar_preview_valor(self, event=None):
+        """Mostra preview em BRL do valor digitado em tempo real."""
+        texto = self.entry_valor.get()
+        if not texto:
+            self.label_valor_preview.config(text="", foreground="#2E7D32")
+            return
+        try:
+            valor = self._parse_valor(texto)
+            self.label_valor_preview.config(text=f"→ {format_brl(valor)}", foreground="#2E7D32")
+        except ValueError:
+            self.label_valor_preview.config(text="Valor inválido", foreground="#C62828")
+
+    def _mostrar_toast(self, mensagem: str, tipo: str = "sucesso"):
+        """
+        Exibe uma notificação flutuante discreta no canto inferior direito da janela.
+        Some automaticamente após 2.5 segundos.
+        
+        Equivalente ao componente <Toast> / useToast() de bibliotecas como Chakra UI ou React Hot Toast.
+        Como Tkinter não tem Promises/async nativo, usamos o .after() que funciona como setTimeout() no JS:
+        self.after(2500, toast.destroy) === setTimeout(() => toast.remove(), 2500)
+        """
+        cor_bg = "#2E7D32" if tipo == "sucesso" else "#C62828"
+        icone = "✅" if tipo == "sucesso" else "❌"
+
+        # Toplevel é como um <dialog> ou um portal React — uma janela flutuante fora da hierarquia normal
+        toast = tk.Toplevel(self)
+        toast.overrideredirect(True)   # remove barra de título e bordas
+        toast.attributes("-topmost", True)  # sempre visível acima das outras janelas
+        toast.configure(bg=cor_bg)
+
+        tk.Label(
+            toast,
+            text=f"  {icone}  {mensagem}  ",
+            bg=cor_bg, fg="white",
+            font=("Segoe UI", 10, "bold"),
+            padx=10, pady=8,
+        ).pack()
+
+        # Posicionar no canto inferior direito da janela principal
+        self.update_idletasks()
+        x = self.winfo_x() + self.winfo_width() - 320
+        y = self.winfo_y() + self.winfo_height() - 80
+        toast.geometry(f"+{x}+{y}")
+
+        # Destruir automaticamente após 2.5 segundos (equivalente ao setTimeout do JS)
+        self.after(2500, toast.destroy)
+
     def _aplicar_mascara_data(self, event, var_data: tk.StringVar, entry_data: ttk.Entry):
         """Aplica máscara de data (dd/mm/aaaa)."""
         # Ignora teclas especiais
@@ -778,10 +869,17 @@ class ControleDividaApp(tk.Tk):
         # Preparar próximos campos
         self._atualizar_sugestoes_datas()
         
-        # Limpar campo de valor
+        # Limpar campo de valor e o preview em tempo real
         self.var_valor.set("")
+        self.label_valor_preview.config(text="")
         self.var_status.set("Pago")
         self.entry_valor.focus_set()
+
+        # Mostrar notificação (Toast) de sucesso — some em 2.5s
+        if tipo == "pagamento":
+            self._mostrar_toast(f"Pagamento de {format_brl(valor_pago)} registrado!")
+        else:
+            self._mostrar_toast("Mês sem pagamento registrado.")
 
         if self.saldo_restante == 0.0:
             messagebox.showinfo("Parabéns", "Dívida quitada! 🎉")
@@ -821,12 +919,18 @@ class ControleDividaApp(tk.Tk):
     def _atualiza_resumos(self):
         total_fmt = format_brl(self.total_pago)
         saldo_fmt = format_brl(self.saldo_restante)
+        juros_fmt = format_brl(self.total_juros)
         print("\n🔄 Atualizando resumos:")
         print(f"   Total pago: {self.total_pago} → {total_fmt}")
         print(f"   Dívida restante: {self.saldo_restante} → {saldo_fmt}")
+        print(f"   Total em juros: {self.total_juros} → {juros_fmt}")
 
         if hasattr(self, "label_total"):
             self.label_total.config(text=total_fmt)
+        if hasattr(self, "label_saldo"):
+            self.label_saldo.config(text=saldo_fmt)
+        if hasattr(self, "label_juros_total"):
+            self.label_juros_total.config(text=juros_fmt)
 
         lacunas = self._listar_lacunas_referencia()
         if lacunas:
@@ -1021,6 +1125,7 @@ class ControleDividaApp(tk.Tk):
         # O 'self' no Python é a EXATA mesma coisa que o 'this' no JavaScript!
         # Ele serve para acessar as variáveis da instância atual da classe.
         self.total_pago = 0.0
+        self.total_juros = 0.0
         self.saldo_restante = self.divida_inicial
         self.item_to_reg_index = {}
 
@@ -1069,6 +1174,10 @@ class ControleDividaApp(tk.Tk):
                 reg["valor"] = round(reg["valor"], 2)
 
             self.total_pago = round(self.total_pago + max(0.0, reg["valor"]), 2)
+            # Só acumula juros dos meses em que houve pagamento efetivo.
+            # Meses sem pagamento geram juros que viram dívida (capitalizam), não são "pagos".
+            if reg.get("tipo") != "sem_pagamento" and reg.get("valor", 0) > 0:
+                self.total_juros = round(self.total_juros + juros, 2)
             self.saldo_restante = novo_saldo
 
             reg["mes"] = i

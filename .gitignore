@@ -34,10 +34,13 @@ env/
 *~
 .DS_Store
 
-# Banco de Dados local e Configurações (Ignorados por conter dados pessoais/locais)
+# Banco de Dados local (Ignorado por conter dados pessoais/locais)
+# Arquitetura atual: SQLite (dados.db)
+# Arquitetura anterior: servidor/db.json (Node.js + json-server)
+*.db
+dados.db
 db.json
 config.json
-servidor/db.json
 db-*.json
 # Logs
 *.log
